@@ -1,15 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"debug/dwarf"
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strings"
+	"unicode"
 )
+
+var noshowline = flag.Bool("q", false, "does not show line contents")
+var showruntime = flag.Bool("r", false, "shows hits in runtime package")
+var bekind = flag.Bool("k", false, "suppress some false positives")
 
 func open(path string) (*dwarf.Data, error) {
 	if fh, err := elf.Open(path); err == nil {
@@ -38,9 +46,115 @@ type Line struct {
 	Line int
 }
 
+func display(line Line) {
+	var ok bool
+	var t string
+	var file *File
+	if !*noshowline || *bekind {
+		file = loadFile(line.File)
+		t, ok = file.Get(line.Line)
+	}
+	if !ok || *noshowline {
+		fmt.Printf("%s:%d\n", line.File, line.Line)
+		return
+	}
+	if *bekind && suppress(file, line.Line) {
+		return
+	}
+	fmt.Printf("%s:%d: %s\n", line.File, line.Line, t)
+}
+
+func suppress(file *File, lineno int) bool {
+	// this assumes go formatted code
+
+	line, _ := file.Get(lineno)
+	line = strings.TrimSpace(line)
+
+	// suppress empty lines, just so I don't have to worry about empty lines in the following
+	if line == "" {
+		return true
+	}
+
+	// suppress lines that have nothing but symbols in them
+	onlysyms := true
+	for _, ch := range line {
+		if unicode.IsLetter(ch) || unicode.IsNumber(ch) {
+			onlysyms = false
+			break
+		}
+	}
+	if onlysyms {
+		return true
+	}
+
+	// suppress function headings
+	if strings.HasPrefix(line, "func ") {
+		return true
+	}
+
+	// suppress clauseless for and switch headings
+	if line == "for {" || line == "switch {" {
+		return true
+	}
+
+	// suppress switch clauses
+	if line == "default:" || (strings.HasPrefix(line, "case ") && line[len(line)-1] == ':') {
+		return true
+	}
+
+	// suppress variable declarations without initialization
+	if strings.HasPrefix(line, "var ") && !strings.Contains(line, "=") {
+		return true
+	}
+
+	return false
+}
+
+type File struct {
+	lines []string
+}
+
+var fileCache = map[string]*File{}
+
+func loadFile(filename string) *File {
+	if r := fileCache[filename]; r != nil {
+		return r
+	}
+
+	fh, err := os.Open(filename)
+	if err != nil {
+		return nil
+	}
+	s := bufio.NewScanner(fh)
+	r := &File{}
+	for s.Scan() {
+		t := s.Text()
+		if len(t) > 0 && t[len(t)-1] == '\n' {
+			t = t[:len(t)-1]
+		}
+		r.lines = append(r.lines, t)
+	}
+	if s.Err() != nil {
+		return nil
+	}
+	fileCache[filename] = r
+	return r
+}
+
+func (f *File) Get(lineno int) (string, bool) {
+	if f == nil {
+		return "", false
+	}
+	if lineno-1 < 0 || lineno-1 >= len(f.lines) {
+		return "", false
+	}
+	return f.lines[lineno-1], true
+}
+
 func main() {
+	flag.Parse()
 	lines := map[Line]bool{}
-	dw, err := open(os.Args[1])
+	dw, err := open(flag.Args()[0])
 	must(err)
 	rdr := dw.Reader()
 	rdr.Seek(0)
@@ -52,6 +166,12 @@ func main() {
 		}
 		if e.Tag != dwarf.TagCompileUnit {
 			continue
+		}
+		pkgname, _ := e.Val(dwarf.AttrName).(string)
+		if pkgname == "runtime" {
+			if !*showruntime {
+				continue
+			}
 		}
 		lrdr, err := dw.LineReader(e)
 		must(err)
@@ -82,6 +202,6 @@ func main() {
 		return nonStmtLines[i].File < nonStmtLines[j].File
 	})
 	for _, line := range nonStmtLines {
-		fmt.Printf("%s:%d\n", line.File, line.Line)
+		display(line)
 	}
 }
