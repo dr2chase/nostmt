@@ -18,6 +18,7 @@ import (
 var noshowline = flag.Bool("q", false, "does not show line contents")
 var showruntime = flag.Bool("r", false, "shows hits in runtime package")
 var bekind = flag.Bool("k", false, "suppress some false positives")
+var countonly = flag.Bool("c", false, "only show counts of total and missed")
 
 func open(path string) (*dwarf.Data, error) {
 	if fh, err := elf.Open(path); err == nil {
@@ -46,7 +47,7 @@ type Line struct {
 	Line int
 }
 
-func display(line Line) {
+func display(line Line) int {
 	var ok bool
 	var t string
 	var file *File
@@ -54,14 +55,18 @@ func display(line Line) {
 		file = loadFile(line.File)
 		t, ok = file.Get(line.Line)
 	}
+	if *bekind && suppress(file, line.Line) {
+		return 0
+	}
+	if *countonly {
+		return 1
+	}
 	if !ok || *noshowline {
 		fmt.Printf("%s:%d\n", line.File, line.Line)
-		return
-	}
-	if *bekind && suppress(file, line.Line) {
-		return
+		return 1
 	}
 	fmt.Printf("%s:%d: %s\n", line.File, line.Line, t)
+	return 1
 }
 
 func suppress(file *File, lineno int) bool {
@@ -201,7 +206,11 @@ func main() {
 		}
 		return nonStmtLines[i].File < nonStmtLines[j].File
 	})
+	count := 0
 	for _, line := range nonStmtLines {
-		display(line)
+		count += display(line)
+	}
+	if *countonly {
+		fmt.Printf("total=%d, nostmt=%d\n", len(lines), count)
 	}
 }
