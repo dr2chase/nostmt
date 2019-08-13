@@ -178,6 +178,10 @@ func main() {
 				continue
 			}
 		}
+		if e.Val(dwarf.AttrStmtList) == nil {
+			continue
+		}
+
 		lrdr, err := dw.LineReader(e)
 		must(err)
 
@@ -211,6 +215,7 @@ func main() {
 		count += display(line)
 	}
 	if *countonly {
-		fmt.Printf("total=%d, nostmt=%d\n", len(lines), count)
+		fmt.Printf("total,nostmt,1-nostmt/total\n")
+		fmt.Printf("%d,%d,%.4f\n", len(lines), count, 1.0 - float64(count)/float64(len(lines)))
 	}
 }
